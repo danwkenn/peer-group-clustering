@@ -1,0 +1,190 @@
+---
+title: "Cluster Analysis for 2017 Data"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# devtools::install_github("danwkenn/Benchtools")
+library(Benchtools)
+```
+
+```{r}
+
+processed_data <- readRDS(file = "../data/preprocessed-data.RDS")
+data2017 <- processed_data$data2017
+
+```
+
+## Analysis of Clusters
+
+Read in dissimilarity matrices:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, cache=TRUE,results=FALSE}
+dissim_mats <- get_dissim_mats("../data/profRegr-results-D-fa",n_cores = 3)
+dissim_mat <- combine_dissim_mats(dissim_mats)[[1]]
+```
+
+
+Find clusters using kirigami-2 method with upper-size limit of 100.
+
+```{r}
+clusters_2017 <- hclust_constr_full(d = dissim_mat,check_function = upper_limit,limit = 101, method = "ward.D2",indices = "ch")
+```
+
+Get cluster sizes:
+
+```{r}
+table(clusters_2017)
+```
+
+Use the random forest importance measure to find the variables which best discriminate between clusters:
+
+```{r}
+
+rf_results <- rf_discriminator(data = data2017,cluster = clusters_2017,n_vars_per_cluster = 4,ntree = 1000)
+rf_results$top_variables
+```
+
+Use pairwise scatter plots to investigate the shapes of clusters:
+
+```{r}
+plot_my_clusters(covariate_data = data2017[,rf_results$top_variables],
+                 cluster_allocations = clusters_2017,
+                 ellipse = TRUE)
+```
+
+Plot the clusters for specific variable combinations:
+
+```{r}
+plot_data <- data2017[,c("response1","covariate34","covariate10","covariate8","covariate16")]
+plot_data$cluster <- factor(clusters_2017)
+
+library(ggplot2)
+library(ggpubr)
+p1 <- ggplot(data = plot_data) + geom_point(aes(x = covariate8, y = covariate34,colour= cluster)) + theme_bw() + 
+            stat_ellipse(aes(x = covariate8, 
+              colour = cluster, y = covariate34)) +
+  labs(colour = "Cluster") + xlim(range(plot_data$covariate8)) + ylim(range(plot_data$covariate34))
+p2 <- ggplot(data = plot_data) + geom_point(aes(x = covariate10, y = covariate34,colour= cluster)) + theme_bw() + 
+            stat_ellipse(aes(x = covariate10, 
+              colour = cluster, y = covariate34)) + xlim(range(plot_data$covariate10)) + ylim(range(plot_data$covariate34))
+p3 <- ggplot(data = plot_data) + geom_point(aes(x = covariate10, y = covariate16,colour= cluster)) + theme_bw() + 
+            stat_ellipse(aes(x = covariate10, 
+              colour = cluster, y = covariate16)) + xlim(range(plot_data$covariate10)) + ylim(range(plot_data$covariate16))
+ggarrange(p1,p2,p3,common.legend = TRUE,nrow = 2, ncol = 3)
+```
+
+```{r}
+library(dplyr)
+p7 <- ggplot(data = plot_data %>% filter(cluster != 3)) + geom_point(aes(x = covariate10, y = covariate34,colour= cluster)) + theme_bw() + 
+            stat_ellipse(aes(x = covariate10, 
+              colour = cluster, y = covariate34)) + scale_colour_discrete(breaks = 1:3,drop=FALSE) + xlim(range(plot_data$covariate10[plot_data$cluster!=3])) + ylim(range(plot_data$covariate34[plot_data$cluster!=3]))
+p7
+```
+
+Plot differences between clusters 1 and 2 on the principal components:
+
+```{r}
+subset = clusters_2017 %in% c(1,2)
+pca_fit <- princomp(data2017[subset,])
+pca_res <- as.data.frame(pca_fit$scores)
+# rf_pca_variables <- rf_discriminator(pca_res,clusters[subset],ntree = 1000)
+full_plot <- plot_my_clusters(covariate_data = pca_res[,1:6],cluster_allocations = clusters_2017[subset],ellipse = TRUE,cluster_var_name = "Cluster")
+full_plot
+```
+
+Plotting the principal components
+
+```{r}
+plot_pca_data <- pca_res[,1:4]
+plot_pca_data$cluster <- factor(clusters_2017[subset],levels = 1:max(clusters_2017))
+
+p4 <- ggplot(data = plot_pca_data) + geom_point(aes(x = Comp.1, y = Comp.2,colour= cluster)) + theme_bw() + 
+            stat_ellipse(aes(x = Comp.1, 
+              colour = cluster, y = Comp.2)) + scale_colour_discrete(breaks = 1:3,drop=FALSE) + xlim(range(plot_pca_data$Comp.1[plot_data$cluster!=3])) + ylim(range(plot_pca_data$Comp.2[plot_data$cluster!=3]))
+p5 <- ggplot(data = plot_pca_data) + geom_point(aes(x = Comp.1, y = Comp.3,colour= cluster)) + theme_bw() + 
+            stat_ellipse(aes(x = Comp.1, 
+              colour = cluster, y = Comp.3)) + scale_colour_discrete(breaks = 1:3,drop=FALSE) +
+  xlim(range(plot_pca_data$Comp.1[plot_data$cluster!=3])) + 
+  ylim(range(plot_pca_data$Comp.3[plot_data$cluster!=3]))
+p6 <- ggplot(data = plot_pca_data) + geom_point(aes(x = Comp.3, y = Comp.4,colour= cluster)) + theme_bw() + 
+            stat_ellipse(aes(x = Comp.3, 
+              colour = cluster, y = Comp.4)) + scale_colour_discrete(breaks = 1:3,drop=FALSE) +
+  xlim(range(plot_pca_data$Comp.3[plot_data$cluster!=3])) +
+  ylim(range(plot_pca_data$Comp.4[plot_data$cluster!=3]))
+ggarrange(p4,p5,p6,common.legend = TRUE,nrow = 2, ncol = 3)
+```
+
+```{r}
+# pdf(file = "../figs/cluster-explore.pdf",onefile = FALSE,width = 8,height = 5)
+# ggarrange(p1,p2,p3,p7,p4,p6,common.legend = TRUE,nrow = 2, ncol = 3)
+# dev.off()
+ggarrange(p1,p2,p3,p7,p4,p6,common.legend = TRUE,nrow = 2, ncol = 3)
+```
+
+## Comparing clusters with parallel discriminant analyses
+
+Discriminant analyses are run and then their accuracies compared.
+
+```{r}
+clusters <- clusters_2017
+clustering_data <- data2017
+malanhobis_distance <- function(x,mean,cov){
+  x0 <- sweep(x,2,mean)
+  rad <- apply(x0,1,FUN = function(x) sqrt(t(x) %*% solve(cov) %*% x))
+  rad
+}
+
+pred_res <- data.frame(
+c1 = c(1,1,2),
+c2 = c(2,3,3),
+LDA = NA,
+MD = NA,
+QDA = NA
+)
+
+for(i in 1:nrow(pred_res)){
+  subset <- clusters %in% c(pred_res$c1[i],pred_res$c2[i])
+  lda_fit <- MASS::lda(x = clustering_data[subset,],grouping = clusters[subset])
+  pred_res$LDA[i] <- mean(predict(lda_fit)$class == clusters[subset])
+  qda_fit <- MASS::qda(x = clustering_data[subset,],grouping = clusters[subset])
+  pred_res$QDA[i] <- mean(predict(qda_fit)$class == clusters[subset])
+  mean <- apply(clustering_data[subset,],2,mean)
+  cov <- cov(clustering_data[subset,])
+  
+  md <- malanhobis_distance(x = clustering_data[subset,],mean = mean, cov = cov)
+  
+  md_grid <- seq(min(md),max(md),length.out = 1000)
+  pred_res$MD[i] <- max(sapply(md_grid, function(x) mean((clusters[subset] == pred_res$c1[i]) == (md < x))))
+}
+
+pred_res %>% mutate(`Peer-Group Comparison` = paste0(c1," to ",c2)) %>% 
+  select(`Peer-Group Comparison`, LDA, MD, QDA) %>% 
+  mutate(across(.cols = c(LDA,MD,QDA),~(round(.x,digits = 3)*100)))
+
+```
+
+
+```{r}
+
+subset <- clusters %in% 1:2
+malanhobis_distance <- function(x,mean,cov){
+  x0 <- sweep(x,2,mean)
+  rad <- apply(x0,1,FUN = function(x) sqrt(t(x) %*% solve(cov) %*% x))
+  rad
+}
+
+mean <- apply(clustering_data[subset,],2,mean)
+cov <- cov(clustering_data[subset,])
+
+md <- malanhobis_distance(x = clustering_data[subset,],mean = mean, cov = cov)
+mean((clusters[subset] == 1) == (md < 3.5))
+
+boxplot(md ~ clusters[subset],log = "y",xlab = "Cluster",ylab = "Malanhobis Distance (rel. to Cluster 2)")
+abline(h = 3.4,col = "red")
+
+```

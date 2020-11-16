@@ -1,0 +1,76 @@
+---
+title: "Fitting the Dirichlet Process Mixture Model"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Dirichlet Process Mixture Model
+
+The Dirichlet Process Mixture Model (DPMM) is used to identify latent clusters in the data. Unlike finite mixture models, the DPMM has no requirement on specifying the number of components *a priori*. An MCMC sampler is available from the R package `PReMiuM`, which allows for full customisation of prior hyperparameters. We choose $\kappa_0 = 4$ and leave other hyperparameters to their default values. We found that after some experimentation (not shown) that the value of $\kappa_0$ had some effect on the ability of the MCMC to explore the entire space, visiting modes.
+
+```{r}
+set.seed(123523)
+library(PReMiuM)
+library(Benchtools)
+hyp <- setHyperparams(kappa0 = 4)
+```
+
+```{r}
+processed_data <- readRDS(file = "../data/preprocessed-data.RDS")
+data2017 <- processed_data$data2017
+data2018 <- processed_data$data2018
+reduced_variable_set <- processed_data$reduced_variable_set
+```
+
+```{r, cache=TRUE,results=FALSE,eval = TRUE}
+profRegr_result <- profRegr_in_parallel(
+  results_name = "../data/profRegr-results-D-fa", #name to give to results.
+  n_chains = 6,
+  n_cores = 6,
+  start_seed = sample.int(10^9,size = 1),
+  data = data2017[,reduced_variable_set],
+  covNames = reduced_variable_set,
+  xModel = 'Normal', excludeY = T,
+  whichLabelSwitch = '3', sampler="SliceIndependent",
+  varSelectType = 'None', # 'Continuous',
+  nBurn = 10000, nSweeps = 200000,
+  alpha = -2, hyp = hyp, nClusInit = 3,
+  entropy = F, nProgress = 10, nFilter = 10
+)
+```
+
+```{r, cache=TRUE,results=FALSE,eval = TRUE}
+profRegr_result_2018 <- profRegr_in_parallel(
+  results_name = "../data/profRegr-results-D-fa-2018", #name to give to results.
+  n_chains = 6,
+  n_cores = 6,
+  start_seed = sample.int(10^9,size = 1),
+  data = data2018[,reduced_variable_set],
+  covNames = reduced_variable_set,
+  xModel = 'Normal', excludeY = T,
+  whichLabelSwitch = '3', sampler="SliceIndependent",
+  varSelectType = 'None', # 'Continuous',
+  nBurn = 10000, nSweeps = 200000,
+  alpha = -2, hyp = hyp, nClusInit = 10,
+  entropy = F, nProgress = 10, nFilter = 10
+)
+```
+
+```{r,message=FALSE, warning=FALSE}
+rmarkdown::render(output_file = "mcmc-diagnostics-2017.html",
+                  input = "mcmc-diagnostic-template.Rmd",
+                  params = list(
+                    filepath = "../data/profRegr-results-D-fa",
+                    set_title = "MCMC Diagnostics for DPMM fit to the 2017 Data"
+                  ))
+
+rmarkdown::render(output_file = "mcmc-diagnostics-2018.html",
+                  input = "mcmc-diagnostic-template.Rmd",
+                  params = list(
+                    filepath = "../data/profRegr-results-D-fa-2018",
+                    set_title = "MCMC Diagnostics for DPMM fit to the 2018 Data"
+                  ))
+```

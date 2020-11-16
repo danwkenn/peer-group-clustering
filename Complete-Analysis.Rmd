@@ -1,0 +1,661 @@
+---
+title: "Complete Analysis"
+author: "Daniel W. Kennedy"
+date: "26/05/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+```{r}
+set.seed(1243)
+library(Benchtools)
+```
+
+## Loading in and preparing the data
+
+The following data are for 200 entities with many different measurements. These measurements have been preprocessed to be:
+
+1. **Transformed**: Variables are transformed to the real line. For proportions a logit transform was used. Where 0's and 1's were present, these values were first replaced with `min(x)/2` and `(1+(1-max(x))/2)` respectively, and then the transform was applied. For count variables, the log-transform was used, where 0's were transformed to `log(0.5)`.
+2. **Scaled and centered**: Variables were standardised such that their mean was 0 and their variance was 1.
+3. **Anonymised**: Variables names were replaced with generic placeholders to prevent identification.
+
+While the data contains 4 different programs (groups of organisations) we will focus only on D.
+
+```{r}
+# Read in data for four programs for both 2017 and 2018:
+data2017 <- readRDS("../data/tDF.201700.rds")
+data2018 <- readRDS("../data/tDF.201800.rds")
+
+# Extract program D
+data2017D <- data2017$D
+data2018D <- data2018$D
+
+NUMERIC_COLUMNS <- which(sapply(data2017D,is.numeric))
+for(cols in NUMERIC_COLUMNS){
+  data2017D[[cols]] <- scale(data2017D[[cols]])
+  data2018D[[cols]] <- scale(data2018D[[cols]])
+}
+```
+
+Through discussions with stakeholders, 14 variables were identified as important for describing organisational characteristics and client demographics.
+```{r}
+# Read in the chosen variables:
+varnames <- readRDS("../data/variable-subset.RDS")
+data2017 <- data2017D[,varnames]
+data2018 <- data2018D[,varnames]
+```
+
+We also need to be able to match the rows of organisations in 2017 to 2018 through a matching table:
+
+```{r}
+# Read in matching table:
+match_table <- readRDS("../data/match_table.RDS")
+```
+
+```{r}
+library(ggcorrplot)
+corrplot <- ggcorrplot(cor(data2017),hc.order = TRUE)
+corrplot
+```
+
+We can pull out some of these relationships to see what the relationship looks like:
+
+```{r}
+p1 <- ggplot(data = data2017) + geom_point(aes(x = covariate22, y = covariate27))
+p2 <- ggplot(data = data2017) + geom_point(aes(x = covariate14, y = covariate18))
+p3 <- ggplot(data = data2017) + geom_point(aes(x = covariate20, y = covariate16))
+p4 <- ggplot(data = data2017) + geom_point(aes(x = covariate27, y = covariate26))
+
+library(ggpubr)
+ggarrange(p1,p2,p3,p4,nrow = 2, ncol = 2)
+```
+
+We can also look at whether there are any highly collinear variables, which are essentially redundant information.
+
+```{r}
+fake_data <- cbind(
+  fake = rnorm(nrow(data2017)),
+  data2017
+)
+vifs <- car::vif(lm(data =fake_data,fake ~ .))
+vifs
+vifs/(1+vifs)
+```
+
+Covariates 14, 16, 18, 20, and 27 have high variance inflation factors, meaning almost all their variation can be explained by another variable.
+
+## Principal Component Analysis
+
+We can investigate how well correlated the variables are:
+
+```{r}
+pca_fit <- prcomp(data2017,scale = TRUE,center = TRUE)
+cumul_variance <- cumsum(pca_fit$sdev^2)/sum(pca_fit$sdev^2)
+plot(cumul_variance, xlab = "Number of components", ylab = "Prop. Variance Explained")
+lines(cumul_variance)
+abline(h = 0.8,col = "red")
+abline(h = 0.9,col = "blue")
+abline(h = 0.95,col = "green")
+```
+
+If we take the highly collinear variables and look at them on their own:
+
+```{r}
+KEEP <- (colnames(data2017) %in% c("covariate14","covariate18","covariate20","covariate16"))
+pca_fit <- prcomp(data2017[,KEEP],scale = TRUE,center = TRUE)
+cumul_variance <- cumsum(pca_fit$sdev^2)/sum(pca_fit$sdev^2)
+plot(cumul_variance, xlab = "Number of components", ylab = "Prop. Variance Explained")
+lines(cumul_variance)
+abline(h = 0.8,col = "red")
+abline(h = 0.9,col = "blue")
+abline(h = 0.95,col = "green")
+```
+
+we see that they are mostly explained by just two components. These variables are all related to locality, (regional and remoteness for the client proportion and outlet proportion).
+
+We also saw the variable `covariate27` as being highly collinear. This is the mean age, and can be removed, since we already have age represented by the proportion of young clients and the proportion of old clients.
+
+```{r}
+KEEP <- (colnames(data2017) %in% c("covariate27","covariate26","covariate22"))
+pca_fit <- prcomp(data2017[,KEEP],scale = TRUE,center = TRUE)
+cumul_variance <- cumsum(pca_fit$sdev^2)/sum(pca_fit$sdev^2)
+plot(cumul_variance, xlab = "Number of components", ylab = "Prop. Variance Explained")
+lines(cumul_variance)
+abline(h = 0.8,col = "red")
+abline(h = 0.9,col = "blue")
+abline(h = 0.95,col = "green")
+```
+
+```{r}
+reduced_variable_set <- varnames[!(varnames %in% c("covariate27","covariate18","covariate20"))]
+reduced_variable_set
+pca_fit <- prcomp(data2017[,reduced_variable_set],scale = TRUE,center = TRUE)
+cumul_variance <- cumsum(pca_fit$sdev^2)/sum(pca_fit$sdev^2)
+plot(cumul_varreduced_variable_setiance, xlab = "Number of components", ylab = "Prop. Variance Explained")
+lines(cumul_variance)
+abline(h = 0.8,col = "red")
+abline(h = 0.9,col = "blue")
+abline(h = 0.95,col = "green")
+```
+
+## Dirichlet Process Mixture Model
+
+```{r}
+library(PReMiuM)
+hyp <- setHyperparams(kappa0 = 4)
+```
+
+```{r, cache=TRUE,results=FALSE,eval = TRUE}
+clustering_data <- data2017[,reduced_variable_set]
+profRegr_result <- profRegr_in_parallel(
+  results_name = "profRegr-results-D-fa", #name to give to results.
+  n_chains = 6,
+  n_cores = 6,
+  start_seed = sample.int(10^9,size = 1),
+  data = clustering_data, covNames = colnames(clustering_data),
+  xModel = 'Normal', excludeY = T,
+  whichLabelSwitch = '3', sampler="SliceIndependent",
+  varSelectType = 'None', # 'Continuous',
+  nBurn = 10000, nSweeps = 200000,
+  alpha = -2, hyp = hyp, nClusInit = 3,
+  entropy = F, nProgress = 10, nFilter = 10
+)
+```
+
+We compile the dissimilarity matrix:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, cache=TRUE,results=FALSE}
+dissim_mats <- get_dissim_mats("profRegr-results-D-fa",n_cores = 3)
+
+res1 <- hclust_constr_full(d = dissim_mats[[1]],check_function = upper_limit,limit = 100, method = "complete",indices = "avg.silwidth")
+res2 <- hclust_constr_full(d = dissim_mats[[2]],check_function = upper_limit,limit = 100, method = "complete",indices = "avg.silwidth")
+
+dissim_mat <- combine_dissim_mats(dissim_mats)[[1]]
+```
+
+```{r}
+alpha_vals <- lapply(1:6,
+                     FUN = function(x){
+                      read.table(paste0("profRegr-results-D-fa","/chain-",x,"/output_alpha.txt")) 
+                     })
+alpha_vals <- as.matrix(do.call(alpha_vals,what = "cbind"))
+
+colnames(alpha_vals) <- 1:6
+alpha_vals_cumul <- apply(alpha_vals,2,FUN = function(x){cumsum(x)/(1:length(x))})
+alpha_vals_long <- reshape2::melt(alpha_vals)
+alpha_vals_cumul_long <- reshape2::melt(alpha_vals_cumul)
+ggplot(data = alpha_vals_long, aes(x = Var1, y = value,group = Var2, colour = as.factor(Var2))) + geom_line()
+ggplot(data = alpha_vals_long, aes(x = value,group = Var2, colour = as.factor(Var2))) + geom_density()
+ggplot(data = alpha_vals_cumul_long, aes(x = Var1,y = value, group = Var2, colour = as.factor(Var2))) + geom_line()
+```
+
+```{r}
+alpha_vals <- lapply(1:6,
+                     FUN = function(x){
+                      read.table(paste0("profRegr-results-D-fa","/chain-",x,"/output_logPost.txt"))[,2]
+                     })
+alpha_vals <- as.matrix(do.call(alpha_vals,what = "cbind"))
+
+colnames(alpha_vals) <- 1:6
+alpha_vals_cumul <- apply(alpha_vals,2,FUN = function(x){cumsum(x)/(1:length(x))})
+alpha_vals_long <- reshape2::melt(alpha_vals)
+alpha_vals_cumul_long <- reshape2::melt(alpha_vals_cumul)
+ggplot(data = alpha_vals_long, aes(x = Var1, y = value,group = Var2, colour = as.factor(Var2))) + geom_line()
+ggplot(data = alpha_vals_long, aes(x = value,group = Var2, colour = as.factor(Var2))) + geom_density()
+ggplot(data = alpha_vals_cumul_long, aes(x = Var1,y = value, group = Var2, colour = as.factor(Var2))) + geom_line()
+```
+
+```{r}
+alpha_vals <- lapply(1:6,
+                     FUN = function(x){
+                      read.table(paste0("profRegr-results-D-fa","/chain-",x,"/output_nClusters.txt"))
+                     })
+alpha_vals <- as.matrix(do.call(alpha_vals,what = "cbind"))
+
+colnames(alpha_vals) <- 1:6
+alpha_vals_cumul <- apply(alpha_vals,2,FUN = function(x){cumsum(x)/(1:length(x))})
+alpha_vals_long <- reshape2::melt(alpha_vals)
+alpha_vals_cumul_long <- reshape2::melt(alpha_vals_cumul)
+ggplot(data = alpha_vals_long, aes(x = Var1, y = value,group = Var2, colour = as.factor(Var2))) + geom_line()
+ggplot(data = alpha_vals_long, aes(x = value,group = Var2, colour = as.factor(Var2))) + geom_density()
+ggplot(data = alpha_vals_cumul_long, aes(x = Var1,y = value, group = Var2, colour = as.factor(Var2))) + geom_line()
+```
+
+
+We use the constrained hierarchical clustering to get clusters within the size limits.
+
+```{r}
+clusters <- hclust_constr_full(d = dissim_mat,check_function = upper_limit,limit = 100, method = "average",indices = "ch")
+```
+
+```{r}
+rf_results <- rf_discriminator(data = clustering_data,cluster = clusters,n_vars_per_cluster = 3,ntree = 1000)
+rf_results$top_variables
+# plot_my_clusters(covariate_data = clustering_data[,rf_results$top_variables],
+#                  cluster_allocations = clusters,
+#                  ellipse = TRUE)
+```
+
+Cluster 3 is highly distinguished from clusters 1 and 2.
+
+```{r}
+subset = clusters %in% c(1,2)
+rf_results <- rf_discriminator(data = clustering_data[subset,],cluster = clusters[subset],n_vars_per_cluster = 5)
+plot_my_clusters(covariate_data = clustering_data[subset,rf_results$top_variables],cluster_allocations = clusters[subset],ellipse = TRUE)
+```
+
+Clusters 1 and 2 are not easily separated by single variables.
+
+```{r,fig.width=6,fig.height=6}
+subset = clusters %in% c(1,2)
+pca_fit <- princomp(clustering_data[subset,])
+pca_res <- as.data.frame(pca_fit$scores)
+rf_pca_variables <- rf_discriminator(pca_res,clusters[subset],ntree = 1000)
+full_plot <- plot_my_clusters(covariate_data = pca_res[,rf_pca_variables$top_variables],cluster_allocations = clusters[subset],ellipse = TRUE,cluster_var_name = "Cluster")
+
+pdf(file = "figs/cluster-pcs-scatter.pdf",width=6,height=6)
+plot(full_plot)
+dev.off()
+plot(full_plot)
+```
+```{r}
+subset = clusters %in% c(1,2)
+pca_fit <- princomp(clustering_data[subset,])
+pca_res <- as.data.frame(pca_fit$scores)
+rf_pca_variables <- rf_discriminator(pca_res,clusters[subset],ntree = 1000)
+plot_my_clusters(covariate_data = pca_res[,rf_pca_variables$top_variables],cluster_allocations = clusters[subset],ellipse = TRUE)
+```
+
+```{r}
+lda_fit <- MASS::lda(x = clustering_data[subset,],grouping = clusters[subset])
+qda_fit <- MASS::qda(x = clustering_data[subset,],grouping = clusters[subset])
+lda_top_vars <- colnames(clustering_data)[order(-abs(coef(lda_fit)))[1:4]]
+plot_my_clusters(covariate_data = clustering_data[subset,lda_top_vars],cluster_allocations = clusters[subset],ellipse = TRUE)
+```
+
+```{r}
+mean(predict(lda_fit)$class == clusters[subset])
+mean(predict(qda_fit)$class == clusters[subset])
+```
+
+```{r}
+malanhobis_distance <- function(x,mean,cov){
+  x0 <- sweep(x,2,mean)
+  rad <- apply(x0,1,FUN = function(x) sqrt(t(x) %*% solve(cov) %*% x))
+  rad
+}
+
+mean <- apply(clustering_data[clusters == 1,],2,mean)
+cov <- cov(clustering_data[clusters == 1,])
+
+md <- malanhobis_distance(x = clustering_data[subset,],mean = mean, cov = cov)
+
+boxplot(md ~ clusters[subset],log = "y",xlab = "Cluster",ylab = "Malanhobis Distance (rel. to Cluster 2)")
+abline(h = 4.5,col = "red")
+
+mean((clusters[subset] == 1) == (md < 4.05))
+```
+
+
+
+```{r}
+malanhobis_distance <- function(x,mean,cov){
+  x0 <- sweep(x,2,mean)
+  rad <- apply(x0,1,FUN = function(x) sqrt(t(x) %*% solve(cov) %*% x))
+  rad
+}
+
+pred_res <- data.frame(
+c1 = c(1,1,2),
+c2 = c(2,3,3),
+LDA = NA,
+MD = NA,
+QDA = NA
+)
+
+for(i in 1:nrow(pred_res)){
+  subset <- clusters %in% c(pred_res$c1[i],pred_res$c2[i])
+  lda_fit <- MASS::lda(x = clustering_data[subset,],grouping = clusters[subset])
+  pred_res$LDA[i] <- mean(predict(lda_fit)$class == clusters[subset])
+  qda_fit <- MASS::qda(x = clustering_data[subset,],grouping = clusters[subset])
+  pred_res$QDA[i] <- mean(predict(qda_fit)$class == clusters[subset])
+  mean <- apply(clustering_data[subset,],2,mean)
+  cov <- cov(clustering_data[subset,])
+  
+  md <- malanhobis_distance(x = clustering_data[subset,],mean = mean, cov = cov)
+  
+  md_grid <- seq(min(md),max(md),length.out = 1000)
+  pred_res$MD[i] <- max(sapply(md_grid, function(x) mean((clusters[subset] == pred_res$c1[i]) == (md < x))))
+}
+```
+
+```{r,fig.width=6,fig.height=3}
+rf_variables <- rf_discriminator(clustering_data,clusters,n_vars_per_cluster = 4,ntree = 1000)
+plot_data <- data2017D[,rf_variables$top_variables]
+plot_data$cluster = clusters
+
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+cbbPalette <- c("#000000", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+# 
+# Benchtools::quantile_tileplot(data = plot_data,n_quantiles = 5,grouping_variable = cluster,facet_by_group = TRUE,colour_by_group = TRUE,
+#                               dots = FALSE) +   scale_fill_brewer(palette="Set1") +
+#   guides(alpha = FALSE)
+
+box_labels <- c("very low","low","middle","high","very high")
+# Benchtools::quantile_tileplot(data = plot_data,n_quantiles = 5,grouping_variable = cluster,facet_by_group = TRUE,colour_by_group = TRUE,
+#                               dots = FALSE,box_x_labels = box_labels) +   scale_fill_manual(values = cbbPalette) +
+#   guides(alpha = FALSE,fill = FALSE) + theme(axis.text.x = element_text(angle = 315,hjust = 0, vjust = 0.5))
+
+Benchtools::quantile_tileplot(data = plot_data,n_quantiles = 5,grouping_variable = cluster,facet_by_group = TRUE,colour_by_group = TRUE,
+                              dots = FALSE,box_x_labels = box_labels,highlight_ids = c(27)) +   scale_fill_manual(values = cbbPalette) +
+  guides(alpha = FALSE,fill = FALSE) + 
+  theme(axis.text.x = element_text(angle = 315,hjust = 0, vjust = 0.5),
+        plot.margin = unit(c(5.5, 5.5, 15,5.5), "points"))
+ggsave(file = "figs/fingerprint-plots.pdf",width=6,height=3)
+
+```
+
+```{r}
+cbbPalette <- c("#000000", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+
+p <- Benchtools::quantile_tileplot(data = plot_data,n_quantiles = 5,grouping_variable = cluster,dots = FALSE,box_x_labels = box_labels,
+                                   highlight_ids = c(27))
+p + scale_fill_manual(values = cbbPalette) +
+  guides(alpha = FALSE,fill = FALSE) + theme(axis.text.x = element_text(angle = 315,hjust = 0, vjust = 0.5))
+```
+
+```{r}
+p <- Benchtools::quantile_tileplot(data = plot_data,n_quantiles = 5,
+                                   grouping_variable = cluster,facet_by_group = TRUE,dots = FALSE,
+                                   box_x_labels = box_labels,
+                                   highlight_ids = c(21))
+p + scale_fill_manual(values = rep("#000000",6)) +
+  guides(alpha = FALSE,fill = FALSE) + theme(axis.text.x = element_text(angle = 315,hjust = 0, vjust = 0.5))
+```
+
+
+```{r}
+p <- Benchtools::quantile_tileplot(data = plot_data,n_quantiles = 5,grouping_variable = cluster,colour_by_group = TRUE,dots = FALSE)
+p + scale_fill_hue(l=30)+
+  guides(alpha = FALSE) + theme(axis.text.x = element_text(angle = 315,hjust = 0, vjust = 0.5))
+```
+
+
+## Algorithm Characteristics
+
+## Cluster Size
+
+How does cluster size constraining change the goodness-of-fit of the cluster?
+
+```{r}
+# Provide a different:
+max_cluster_size <- c(50,60,70,80,90,100,110,120,130,140,150,160,170,180,190,200)
+largest_size_kirig <- rep(NA, length(max_cluster_size))
+largest_size_hclust <- rep(NA, length(max_cluster_size))
+```
+
+```{r}
+res <- list()
+kirig1_res <- list()
+kirig2_res <- list()
+for(i in 1:length(max_cluster_size)){
+hclust_agg <- hclust_constr_full(
+  d = dissim_mat,
+  check_function = function(x,...){upper_limit(x,limit = max_cluster_size[i]+1,...)},
+  method = "average",
+  indices = "ch")
+largest_size_hclust[i] <- max(table(hclust_agg))
+kirig_result <- kirigami_constr(
+  dissim_mat = dissim_mat,
+  max_K = 50,method = "average",
+  upper_threshold = max_cluster_size[i],lower_threshold = 1)
+largest_size_kirig[i] <- max(table(kirig_result[[2]]$new))
+res[[i]] <- list()
+res[[i]][[1]] <- fpc::cluster.stats(clustering = as.numeric(as.factor(kirig_result[[2]]$new)),d = dissim_mat)[c("ch","avg.silwidth","pearsongamma")]
+res[[i]][[2]] <- fpc::cluster.stats(clustering = hclust_agg,d = dissim_mat)[c("ch","avg.silwidth","pearsongamma")]
+kirig1_res[[i]] <- kirig_result
+kirig2_res[[i]] <- hclust_agg
+print(i)
+}
+```
+
+```{r}
+cluster_alluvial(cluster_list = kirig1_res[c(1,15)],include_counts = TRUE)
+```
+
+```{r, fig.height= 6, fig.width = 4}
+results <- reshape2::melt(res)
+results$largest_cl <- NA
+results$largest_cl[results$L2 == 1] <- largest_size_kirig[results[results$L2 == 1,]$L1]
+results$largest_cl[results$L2 == 2] <- largest_size_hclust[results[results$L2 == 2,]$L1]
+
+results$type <- c("kirigami","hclust_con")[results$L2]
+results$max_cluster_size <- max_cluster_size[results$L1]
+results$index <- results$L3
+ggplot(data = results, mapping = aes(x = max_cluster_size,y = value,colour= type)) + geom_point() + geom_line() + facet_grid(index ~ ., scales = "free")
+results$compliant <- results$largest_cl < results$max_cluster_size
+
+results %>% head()
+
+results$index <- factor(results$index,levels = c("avg.silwidth","ch","pearsongamma"))
+levels(results$index) <- c("Avg. Silhouette Width","CH","Pearson-Gamma")
+results$type <- factor(results$type, levels = c("kirigami","hclust_con"))
+levels(results$type) <- c("Kirigami-1","Kirigami-2")
+index_v_thresh_plot <- ggplot(
+    data = results,
+    mapping = aes(x = max_cluster_size,y = value,colour= type,shape = compliant,group = type)) + 
+    geom_point(size = 2) + geom_line() + 
+    facet_grid(index ~ ., scales = "free") +
+    labs(x = "Cluster size upper threshold",
+         y = "Index Value",
+         colour = "Algorithm",
+         shape = "Compliant") +
+    theme_bw()
+index_v_thresh_plot
+```
+
+```{r}
+hclust_agg <- hclust_constr(d = dissim_mat,check_function = function(x,...){upper_limit(x,limit = 101,...)}, method = "average",indices = "ch")
+result <- hclust_agg
+cluster_list <- list(
+ n_clusters = apply(result$allocations,1,function(x) length(unique(x))),
+ clusterings = lapply(1:nrow(result$allocations),function(x) result$allocations[x,])
+)
+library(dplyr)
+determine_optimal_clusters(
+ dissim_mat = dissim_mat,
+ cluster_list = cluster_list,indices = "ch",
+ max_cluster_number = 20,
+ check_function = function(x,...){upper_limit(x,limit = 101,...)})
+```
+
+```{r,message=FALSE,include = FALSE}
+res2 <- list()
+smallest_n_cl <- list()
+for(method in c("average","complete","ward.D2","single")){
+    hclust_agg <- hclust_constr(
+      d = dissim_mat,
+      check_function = upper_limit, 
+      method = method,
+      limit = 100)
+    smallest_n_cl[[method]] <- length(unique(hclust_agg$allocations[1,]))
+  res <- list()
+    for(i in 1:50){
+      res[[i]] <- fpc::cluster.stats(clustering = hclust_agg$allocations[i,],d = dissim_mat)[c("ch","avg.silwidth","pearsongamma")]
+      print(i)
+    }
+  res2[[method]] <- res
+}
+  
+  cluster_numbers <- reshape2::melt(res2)
+  cluster_numbers$index = cluster_numbers$L3
+  cluster_numbers$linkage_method = cluster_numbers$L1
+  cluster_numbers$n_clusters <- cluster_numbers$L2+2
+  cluster_numbers$linkage_method <- factor(cluster_numbers$linkage_method,levels = c("average","single","complete","ward.D2"))
+  levels(cluster_numbers$linkage_method) <- c("average","single","complete","Ward")
+  cluster_numbers$index <- factor(cluster_numbers$index,levels = c("avg.silwidth","ch","pearsongamma"))
+  levels(cluster_numbers$index) <- c("Avg. Silhouette Width","CH","Pearson-Gamma")
+index_v_clust_size_plot <- ggplot(data = cluster_numbers, mapping = aes(x = n_clusters,y = value,colour = linkage_method)) + 
+    geom_point() + geom_line() + 
+    facet_grid(index ~ ., scales = "free") +
+    theme_bw() + 
+    labs(x = "Number of Clusters",y = "Index Value",colour = "Linkage Method")
+```
+
+
+```{r, fig.width=8,fig.height = 6}
+library(ggpubr)
+combined_plots <- ggarrange(index_v_thresh_plot, index_v_clust_size_plot)
+pdf(file = "figs/kirigami-index-v-thresh.pdf",width = 8,height = 6)
+plot(combined_plots)
+dev.off()
+combined_plots
+```
+
+## Reallocation:
+
+```{r}
+joinD_ordered <- joinD[order(joinD$id.y),]
+```
+
+```{r, cache=TRUE, results=FALSE}
+clustering_data_2018 <- data2018[,reduced_variable_set]
+profRegr_result <- profRegr_in_parallel(
+  results_name = "profRegr-results-D-fa-2018", #name to give to results.
+  n_chains = 6,
+  n_cores = 6,
+  start_seed = sample.int(10^9,size = 1),
+  data = clustering_data_2018, covNames = colnames(clustering_data_2018),
+  xModel = 'Normal', excludeY = T,
+  whichLabelSwitch = '3', sampler="SliceIndependent",
+  varSelectType = 'None', # 'Continuous',
+  nBurn = 1000, nSweeps = 200000,
+  alpha = -2, hyp = hyp, nClusInit = 10,
+  entropy = F, nProgress = 10, nFilter = 10
+)
+```
+
+```{r}
+library(dplyr)
+data2018D$id <- 1:nrow(data2018D)
+data2017D$id <- 1:nrow(data2017D)
+match_D <- match_table %>% dplyr::filter(Program_2017 == "D")
+joinD <- left_join(data2017D,match_D,by = c(act_name = "act_name_2017",dlvryorg_legalname = "dlvryorg_legalname_2017"))
+joinD <- right_join(joinD,data2018D,by = c(act_name_2018 = "act_name",dlvryorg_legalname_2018 = "dlvryorg_legalname"))
+```
+
+```{r}
+library(Benchtools)
+clusters_2017 <- hclust_constr_full(d = dissim_mat,check_function = function(x,...){upper_limit(x,limit = 101,...)}, method = "average",indices = "ch")
+```
+
+```{r}
+  dissim_mats <- get_dissim_mats("profRegr-results-D-fa/")
+  
+  dissim_mat_combined_2017 <- combine_dissim_mats(dissim_mats)
+  dissim_mat_combined_2017 <- dissim_mat_combined_2017[[1]]
+  
+  dissim_mats_2018 <- get_dissim_mats("profRegr-results-D-fa-2018/")
+  
+  dissim_mat_combined_2018 <- combine_dissim_mats(dissim_mats_2018)
+  dissim_mat_combined_2018 <- dissim_mat_combined_2018[[1]]
+  
+  cl2017 <- 
+    hclust_constr_full(
+      d = dissim_mat_combined_2017,check_function = upper_limit,
+      limit = 100, method = "average",
+      indices = 'ch')
+  
+  reallocation_results <- reallocation_complete(
+    year1_clusters = cl2017,
+    year2_dissim = dissim_mat_combined_2018,
+    matcher = joinD_ordered$id.x,
+    method = "average",
+    n_skip = 1,
+    max_eval_points = 50,
+    exhaustive = FALSE,
+    max_prop = 0.95,
+    check_function = upper_limit,
+    prop_change_threshold = 0.1,
+    indices = c("ch"),return_all = TRUE,
+    limit = 100
+  )
+  
+  # saveRDS(object = reallocation_results,file = "reallocation-results-2.RDS")
+  cl2018 <- 
+    hclust_constr_full(
+      d = dissim_mat_combined_2018,check_function = upper_limit,
+      limit = 100, method = "average",
+      indices = 'ch')
+```
+
+```{r}
+  # Guiding lines:
+  optimal_realloc_ProC <- 1-calc_prop_change(clust_1 = cl2017,clust_2 = reallocation_results$final_clusters,matcher = joinD_ordered$id.x)
+  optimal_realloc_GOF <- fpc::cluster.stats(d = dissim_mat_combined_2018,clustering = reallocation_results$final_clusters)$ch
+  
+  # No reallocation:
+  hclust_proc <- 1-calc_prop_change(clust_1 = cl2017,clust_2 = cl2018,matcher = joinD_ordered$id.x)
+  hclust_GOF <- fpc::cluster.stats(d = dissim_mat_combined_2018,clustering = cl2018)$ch
+```
+
+```{r}
+  sil_vals <- cluster::silhouette(x = cl2017,dissim_mat_combined_2017)
+  prior_sil_vals <- sil_vals[joinD$id.x[!is.na(joinD$id.x)],]
+  new_sil_vals <- cluster::silhouette(x = reallocation_results$final_clusters,dissim_mat_combined_2018)
+  new_sil_vals <- new_sil_vals[joinD$id.y[!is.na(joinD$id.x)],]
+  plot_data <- data.frame(
+    old = prior_sil_vals[,3],
+    new = new_sil_vals[,3],
+    old_group = cl2017[joinD_ordered$id.x[!is.na(joinD_ordered$id.x)]],
+    new_group = reallocation_results$final_clusters[joinD$id.y[!is.na(joinD$id.x)]]
+  )
+  
+  count_table <- table(plot_data$old_group,plot_data$new_group)
+  count_table_max <- apply(count_table,1,which.max)
+  count_table <- count_table[,count_table_max]
+  count_table 
+  plot_data$new_group <- order(count_table_max)[plot_data$new_group]
+```
+
+```{r, fig.cap=""}
+p1 <- ggplot(data = reallocation_results$full_indices, aes(x = value, y = 1-prop_change)) + geom_line() +
+    labs(y = "Proportion of Connections Retained (PCR)", x = "Goodness-of-Fit") + theme_bw() + 
+    geom_hline(yintercept = optimal_realloc_ProC,linetype = "longdash",alpha = alpha,size = size) + 
+    geom_hline(yintercept = hclust_proc,linetype = 3,alpha = alpha,size = size) +
+    geom_vline(xintercept = optimal_realloc_GOF,linetype = "longdash",alpha = alpha,size = size) +
+    geom_vline(xintercept = hclust_GOF,linetype = 3,alpha = alpha,size = size)
+
+  p2 <- ggplot(data = reallocation_results$full_indices, aes(x = top_props, y = 1-prop_change)) + geom_line() +
+    labs(x = "Proportion to be Reallocated", y = "Proportion of Connections Retained (PCR)") + theme_bw() + 
+    geom_hline(yintercept = optimal_realloc_ProC,linetype = "longdash",alpha = alpha,size = size)+ 
+    geom_hline(yintercept = hclust_proc,linetype = 3,alpha = alpha,size = size)
+  p3 <- ggplot(data = reallocation_results$full_indices, aes(y = value, x = top_props)) + geom_line() +
+    labs(x = "Proportion to be Reallocated", y = "Goodness-of-Fit") + theme_bw() + 
+    geom_hline(yintercept = optimal_realloc_GOF,linetype = "longdash",alpha = alpha,size = size)+ 
+    geom_hline(yintercept = hclust_GOF,linetype = 3,alpha = alpha,size = size)
+  
+    p4 <- ggplot(data = plot_data, aes(x = old, y = new, colour = as.factor(old_group),shape = old_group!=new_group)) + geom_point()  +
+    geom_abline() +
+    labs(x = "Silhouette Previous Year", y = "Silhouette Current Year", colour = "Previous\nYear\nCluster",shape = "Reallocated")+
+    theme_bw()
+  
+```
+
+```{r, fig.width=8,fig.height=7}
+pdf(file = "figs/fit-versus-constraints.pdf",width = 8, height = 7)
+  ggarrange(p2,p3,p1,p4,nrow = 2, ncol = 2,common.legend = TRUE,legend = "right")
+dev.off()
+    ggarrange(p2,p3,p1,p4,nrow = 2, ncol = 2,common.legend = TRUE,legend = "right")
+
+```
+
+```{r}
+cluster_alluvial(plot_data$old_group,plot_data$new_group)
+```
+

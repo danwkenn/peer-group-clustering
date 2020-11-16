@@ -1,0 +1,216 @@
+---
+title: "Initial Data Analysis"
+author: "Daniel W. Kennedy"
+date: "26/08/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libraries, message=FALSE, warning=FALSE}
+library(ggcorrplot)
+library(ggpubr)
+source("ggcorrplot2.R")
+```
+
+# Introduction
+
+The following is an initial exploratory analysis of the data.
+
+```{r read-in}
+# Read in data for four programs for both 2017 and 2018:
+data2017 <- readRDS("../data/tDF.201700.rds")
+data2018 <- readRDS("../data/tDF.201800.rds")
+
+# Extract program D
+data2017D <- data2017$D
+data2018D <- data2018$D
+
+# Scale the numeric columns of the data.
+NUMERIC_COLUMNS <- which(sapply(data2017D,is.numeric))
+for(cols in NUMERIC_COLUMNS){
+  data2017D[[cols]] <- scale(data2017D[[cols]])
+}
+for(cols in NUMERIC_COLUMNS){
+  data2018D[[cols]] <- scale(data2018D[[cols]])
+}
+```
+
+Through discussions with stakeholders, 14 variables were identified as important for describing organisational characteristics and client demographics.
+
+```{r subset-data}
+# Read in the chosen variables to be analysed and subset the data to only include them:
+varnames <- readRDS("../data/variable-subset.RDS")
+data2017 <- data2017D[,varnames]
+data2018 <- data2018D[,varnames]
+```
+
+## Basic Visual Analysis of the 2017 Data
+
+The correlation plot in figure ~\@ref(fig:corrplot) shows several highly correlated pairs of variables, including covariate14 and covariate 18. These are both related to client regionality. The second block of covariate 34, 10, 16, and 20 are a combination of different types of variable including client remoteness, ethnicity and socioeconomic status. The third and largest block is comprised of age variables as well as disability and gender.
+
+```{r corrplot, fig.cap= "Correlation plot of the 14 variables in the data-set. Variables are ordered based on a heirarchical clustering which groups highly correlated variables together, resulting in \"blocks\"."}
+corrplot <- ggcorrplot2((cor(data2017)),hc.order = TRUE)
+corrplot
+```
+Figure~\@ref(fig:specific_scatters) shows how several variables have positive and negative correlations. This is indicative of a connection between the variables, perhaps in the form of a causative relationship or a single latent variable. 
+
+```{r specific_scatters, fig.cap = "Selected pairs of variables to investigate their dependencies."}
+p1 <- ggplot(data = data2017) + geom_point(aes(x = covariate22, y = covariate27))
+p2 <- ggplot(data = data2017) + geom_point(aes(x = covariate14, y = covariate18))
+p3 <- ggplot(data = data2017) + geom_point(aes(x = covariate20, y = covariate16))
+p4 <- ggplot(data = data2017) + geom_point(aes(x = covariate27, y = covariate26))
+ggarrange(p1,p2,p3,p4,nrow = 2, ncol = 2)
+```
+
+We can also look at whether there are any highly collinear variables, which are essentially redundant information.
+
+```{r}
+vif_data <- cbind(
+  vif = rnorm(nrow(data2017)),
+  data2017
+)
+vifs <- car::vif(lm(data =vif_data,vif ~ .))
+vifs
+r2 <- vifs/(1+vifs)
+```
+
+Covariates 14, 16, 18, 20, and 27 have high variance inflation factors, meaning almost all their variation can be explained by the other variables in terms of linear relationships.
+
+## Dimension Reduction assisted by Principal Component Analysis
+
+The principal component analysis provides information as to how correlated the variables are in the data, and whether the variation in the data can be explained by orthogonal linear combinations known as principal components.
+
+```{r}
+pca_fit <- prcomp(data2017,scale = TRUE,center = TRUE)
+```
+
+Figure \@ref(fig:pca-cumul-variance) shows that 95% of the variance in the data can be explained by just 9 principal components.
+
+```{r pca-cumul-variance, fig.cap = "Variance explained by the first $n$ components as a proportion of the total variance in the data. The red, blue and green horizontal lines indicate 80%, 90%, and 95% respectively."}
+cumul_variance <- cumsum(pca_fit$sdev^2)/sum(pca_fit$sdev^2)
+plot(cumul_variance, xlab = expression("Number of components"~(italic(n))), ylab = "Prop. Variance Explained")
+lines(cumul_variance)
+abline(h = 0.8,col = "red")
+abline(h = 0.9,col = "blue")
+abline(h = 0.95,col = "green")
+```
+Taking the 5 most collinear variables (based on the VIFs), we see below that the variance can mostly be explained by only 2 components, suggesting that it may be possible to choose two variables to represent the group. Based on the correlation plot, three variables are removed due to their similarity to other variables, as well as having high variance inflation factors.
+
+```{r}
+KEEP <- varnames[r2 > 0.9]
+KEEP
+r2[KEEP]
+pca_fit <- prcomp(data2017[,KEEP],scale = TRUE,center = TRUE)
+cumul_variance <- cumsum(pca_fit$sdev^2)/sum(pca_fit$sdev^2)
+plot(cumul_variance, xlab = "Number of components", ylab = "Prop. Variance Explained")
+lines(cumul_variance)
+abline(h = 0.8,col = "red")
+abline(h = 0.9,col = "blue")
+abline(h = 0.95,col = "green")
+```
+
+
+```{r}
+reduced_variable_set <- varnames[!(varnames %in% c("covariate16","covariate14","covariate27"))]
+reduced_variable_set
+r2[reduced_variable_set]
+pca_fit <- prcomp(data2017[,reduced_variable_set],scale = TRUE,center = TRUE)
+cumul_variance <- cumsum(pca_fit$sdev^2)/sum(pca_fit$sdev^2)
+plot(cumul_variance, xlab = "Number of components", ylab = "Prop. Variance Explained")
+lines(cumul_variance)
+abline(h = 0.8,col = "red")
+abline(h = 0.9,col = "blue")
+abline(h = 0.95,col = "green")
+```
+
+Replotting the correlation plot, there is a strong correlation between covariate 10, 20, and 34, and 80% of the variance in them is explained with a single principal component, however all were kept in the data-set.
+
+```{r}
+KEEP <- c("covariate20","covariate34","covariate10")
+KEEP
+r2[KEEP]
+pca_fit <- prcomp(data2017[,KEEP],scale = TRUE,center = TRUE)
+cumul_variance <- cumsum(pca_fit$sdev^2)/sum(pca_fit$sdev^2)
+plot(cumul_variance, xlab = "Number of components", ylab = "Prop. Variance Explained")
+lines(cumul_variance)
+abline(h = 0.8,col = "red")
+abline(h = 0.9,col = "blue")
+abline(h = 0.95,col = "green")
+```
+
+The correlation plot shows that the large blocks have been reduced in size, and the most correlated pairs have been removed, with the exception of covariates 10 and 34.
+
+```{r}
+corrplot <- ggcorrplot2((cor(data2017[,reduced_variable_set])),hc.order = TRUE)
+corrplot
+```
+
+```{r}
+hc_order <- ggcorrplot:::.hc_cormat_order(abs(cor(data2017[,reduced_variable_set])))
+reduced_variable_set[hc_order]
+pca_fit <- prcomp(data2017[,reduced_variable_set],scale = TRUE,center = TRUE)
+cumul_variance <- cumsum(pca_fit$sdev^2)/sum(pca_fit$sdev^2)
+(pca_fit$rotation) %>% reshape2::melt() %>% 
+  mutate(Var2 = factor(Var2,levels = paste0("PC",1:11)),
+         Var1 = factor(Var1, levels = reduced_variable_set[hc_order])) %>%
+  ggplot(mapping = aes(x = Var2, y = Var1, fill = value)) + geom_tile()+
+ scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+   midpoint = 0, limit = c(-1,1), space = "Lab", 
+   name="Pearson\nCorrelation")
+```
+# Analysis of 2018 Data
+
+We now analyse the data for 2018.
+
+```{r}
+match_table <- readRDS("../data/match_table.RDS")
+match_D <- match_table %>% dplyr::filter(Program_2017 == "D")
+```
+
+The correlation structure for the 2018 data is highly similar to that of 2017, which is a good justification of the idea of using the same variable set for both years.
+
+```{r corrplot2, fig.cap= "Correlation plot of the 14 variables in the data-set. Variables are ordered based on a heirarchical clustering which groups highly correlated variables together, resulting in \"blocks\"."}
+corrplot <- ggcorrplot2((cor(data2018)),hc.order = TRUE)
+corrplot
+```
+
+## Comparison between years
+
+```{r}
+library(dplyr)
+data2017D_w_id <- data2017D
+data2017D_w_id$id <- 1:nrow(data2017D)
+data2018D_w_id <- data2018D
+data2018D_w_id$id <- 1:nrow(data2018D)
+
+joinD <- left_join(data2017D_w_id,match_D,by = c(act_name = "act_name_2017",dlvryorg_legalname = "dlvryorg_legalname_2017"))
+joinD <- right_join(joinD,data2018D_w_id,by = c(act_name_2018 = "act_name",dlvryorg_legalname_2018 = "dlvryorg_legalname"))
+joinD <- joinD[order(joinD$id.y),]
+```
+
+As expected there is a strong correspondence between years.
+
+```{r year-comp-scatter, fig.cap="Comparison of data from 2017 (x-axis) to data from 2018 (y-axis) for the reduced variable subset. There is moderate to strong correspondence for all variables, although a few select outlets change their values substantially."}
+par(mfrow = c(3,4))
+for(i in 1:length(reduced_variable_set)){
+  plot(x = joinD[,paste0(reduced_variable_set[i],c(".x"))],y = joinD[,paste0(reduced_variable_set[i],c(".y"))],main = reduced_variable_set[i],xlab = "",ylab= "")
+  abline(0,1)
+}
+```
+# Conclusions
+
+High correlation was observed, and so 3 variables were removed in order to reduce the dimension of the data-set.
+
+```{r}
+saveRDS(object = list(
+  data2017 = data2017,
+  data2018 = data2018,
+  reduced_variable_set = reduced_variable_set,
+  joinD = joinD
+),
+file = "../data/preprocessed-data.RDS")
+```
+
